@@ -1,5 +1,24 @@
 *.sw*
 *.orig
 *.retry
+
+# Roles installed from roles/requirements.yml; local roles are tracked.
 /roles/*
 !/roles/requirements.yml
+!/roles/incus_upgrade/
+
+# Collections installed from collections/requirements.yaml
+/collections/ansible_collections/
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+.venv/
+.ansible/
+
+# Local inventory
+/inventory.ini

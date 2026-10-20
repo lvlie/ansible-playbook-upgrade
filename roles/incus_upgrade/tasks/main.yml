@@ -1,0 +1,49 @@
+---
+- name: Upgrade host packages (including incus and netdata)
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: dist
+    dpkg_options: force-confdef,force-confold
+  tags: [host_upgrade]
+
+- name: Update netdata
+  ansible.builtin.import_tasks: netdata.yml
+  tags: [netdata]
+
+- name: Upgrade incus guests
+  ansible.builtin.import_tasks: guests.yml
+  tags: [guests]
+
+- name: Remove unused host packages
+  ansible.builtin.apt:
+    autoremove: true
+    purge: true
+  tags: [cleanup]
+
+- name: Clean host apt cache
+  ansible.builtin.apt:
+    clean: true
+  # apt always reports a change for clean; emptying the cache is housekeeping.
+  changed_when: false
+  tags: [cleanup]
+
+- name: Check whether the host needs a reboot
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: incus_upgrade_host_reboot_required
+  tags: [reboot]
+
+- name: Reboot the host
+  ansible.builtin.reboot:
+  when:
+    - incus_upgrade_reboot_host | bool
+    - incus_upgrade_host_reboot_required.stat.exists
+  tags: [reboot]
+
+- name: Report pending host reboot
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} requires a reboot (set incus_upgrade_reboot_host=true to do this automatically)"
+  when:
+    - not incus_upgrade_reboot_host | bool
+    - incus_upgrade_host_reboot_required.stat.exists
+  tags: [reboot]

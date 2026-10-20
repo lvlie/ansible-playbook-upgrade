@@ -1,0 +1,13 @@
+---
+# Used by test_role_mock.py: runs the role locally against the mock Incus API.
+- name: Upgrade guests through the mock Incus API
+  hosts: all
+  connection: local
+  gather_facts: false
+  become: false
+
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+  roles:
+    - incus_upgrade

@@ -1,5 +1,4 @@
 #!/usr/bin/python
-# -*- coding: utf-8 -*-
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 DOCUMENTATION = r"""
@@ -113,7 +112,7 @@ class IncusClient:
         status, data = self.request(method, path, body)
         result = json.loads(data)
         if result.get("type") == "error" or status >= 400:
-            raise IncusError("%s %s failed: %s" % (method, path, result.get("error", status)))
+            raise IncusError(f"{method} {path} failed: {result.get('error', status)}")
         return result
 
 
@@ -136,13 +135,13 @@ def run(module):
     if p["cwd"]:
         body["cwd"] = p["cwd"]
 
-    op = client.json_request("POST", "/1.0/instances/%s/exec" % instance, body)
-    op = client.json_request("GET", "%s/wait?timeout=%d" % (op["operation"], p["timeout"]))
+    op = client.json_request("POST", f"/1.0/instances/{instance}/exec", body)
+    op = client.json_request("GET", f"{op['operation']}/wait?timeout={p['timeout']}")
     metadata = op["metadata"]
     if metadata.get("status") == "Running":
-        raise IncusError("command did not finish within %d seconds" % p["timeout"])
+        raise IncusError(f"command did not finish within {p['timeout']} seconds")
     if metadata.get("status_code") != 200:
-        raise IncusError("exec failed: %s" % (metadata.get("err") or metadata.get("status")))
+        raise IncusError(f"exec failed: {metadata.get('err') or metadata.get('status')}")
 
     exec_meta = metadata.get("metadata") or {}
     output = {}
@@ -171,7 +170,7 @@ def main():
     try:
         rc, stdout, stderr = run(module)
     except (IncusError, OSError, ValueError, KeyError) as e:
-        module.fail_json(msg="incus exec on %s failed: %s" % (module.params["name"], e))
+        module.fail_json(msg=f"incus exec on {module.params['name']} failed: {e}")
 
     result = dict(
         changed=True,
