@@ -23,3 +23,101 @@
 
   roles:
     - docker_compose
+
+- name: Upgrade Incus hosts and their Ubuntu containers
+  hosts: incus
+  gather_facts: true
+  become: true
+
+  vars:
+    # Reboot the Incus host itself when /var/run/reboot-required exists.
+    upgrade_reboot_host: false
+    # Restart guests that report /var/run/reboot-required after upgrading.
+    upgrade_restart_guests: false
+    # How deep below /root to look for docker compose files inside guests.
+    upgrade_compose_search_depth: 3
+
+  tasks:
+    - name: Upgrade host packages (including incus and netdata)
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        dpkg_options: force-confdef,force-confold
+
+    - name: Gather installed packages
+      ansible.builtin.package_facts:
+
+    # Netdata installed through the kickstart static build is not managed by
+    # apt, so it has to be updated with its own updater.
+    - name: Find netdata updater for non-apt installs
+      ansible.builtin.stat:
+        path: /opt/netdata/usr/libexec/netdata/netdata-updater.sh
+      register: netdata_updater
+      when: "'netdata' not in ansible_facts.packages"
+
+    - name: Update netdata with its own updater
+      ansible.builtin.command:
+        argv:
+          - /opt/netdata/usr/libexec/netdata/netdata-updater.sh
+          - --non-interactive
+      register: netdata_update
+      changed_when: "'up to date' not in (netdata_update.stdout + netdata_update.stderr)"
+      when:
+        - "'netdata' not in ansible_facts.packages"
+        - netdata_updater.stat.exists
+
+    - name: Ensure netdata is running
+      ansible.builtin.service:
+        name: netdata
+        state: started
+        enabled: true
+      when: "'netdata' in ansible_facts.packages or (netdata_updater.stat.exists | default(false))"
+
+    - name: Wait for the incus daemon after the upgrade
+      ansible.builtin.command:
+        argv: [incus, admin, waitready, --timeout=300]
+      changed_when: false
+
+    - name: List incus instances
+      ansible.builtin.command:
+        argv: [incus, list, --all-projects, --format, json]
+      register: incus_instances
+      changed_when: false
+
+    - name: Upgrade running incus containers
+      ansible.builtin.include_tasks: tasks/incus_guest.yml
+      loop: >-
+        {{ incus_instances.stdout | from_json
+           | selectattr('type', 'equalto', 'container')
+           | selectattr('status', 'equalto', 'Running')
+           | list }}
+      loop_control:
+        loop_var: incus_guest
+        label: "{{ incus_guest.project | default('default') }}/{{ incus_guest.name }}"
+
+    - name: Remove unused host packages
+      ansible.builtin.apt:
+        autoremove: true
+        purge: true
+
+    - name: Clean host apt cache
+      ansible.builtin.apt:
+        clean: true
+
+    - name: Check whether the host needs a reboot
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: host_reboot_required
+
+    - name: Reboot the host
+      ansible.builtin.reboot:
+      when:
+        - upgrade_reboot_host | bool
+        - host_reboot_required.stat.exists
+
+    - name: Report pending host reboot
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} requires a reboot (set upgrade_reboot_host=true to do this automatically)"
+      when:
+        - not upgrade_reboot_host | bool
+        - host_reboot_required.stat.exists
