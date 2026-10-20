@@ -17,7 +17,6 @@
   when: (incus_guest_os.stdout | default('') | trim) == 'ubuntu'
   module_defaults:
     incus_exec:
-      name: "{{ incus_guest.name }}"
       project: "{{ incus_guest.project | default('default') }}"
       socket: "{{ incus_socket }}"
       environment:
@@ -27,6 +26,7 @@
   block:
     - name: Upgrade apt packages in {{ incus_guest.name }}
       incus_exec:
+        name: "{{ incus_guest.name }}"
         command: [sh, -c, "{{ apt_script }}"]
       vars:
         apt_script: >-
@@ -40,6 +40,7 @@
 
     - name: Find docker compose files in /root of {{ incus_guest.name }}
       incus_exec:
+        name: "{{ incus_guest.name }}"
         command: [sh, -c, "{{ find_script }}"]
       vars:
         find_script: >-
@@ -53,6 +54,7 @@
 
     - name: Pull and recreate compose projects in {{ incus_guest.name }}
       incus_exec:
+        name: "{{ incus_guest.name }}"
         command: [sh, -c, "{{ compose_script }}", sh, "{{ compose_file }}"]
       vars:
         compose_script: >-
@@ -69,6 +71,7 @@
 
     - name: Remove dangling docker images in {{ incus_guest.name }}
       incus_exec:
+        name: "{{ incus_guest.name }}"
         command: [docker, image, prune, --force]
       register: incus_guest_docker_prune
       changed_when: "'Total reclaimed space: 0B' not in incus_guest_docker_prune.stdout"
@@ -76,12 +79,14 @@
 
     - name: Clean up apt in {{ incus_guest.name }}
       incus_exec:
+        name: "{{ incus_guest.name }}"
         command: [sh, -c, apt-get -y -q autoremove --purge && apt-get -q clean]
       register: incus_guest_apt_clean
       changed_when: "' 0 to remove' not in incus_guest_apt_clean.stdout"
 
     - name: Check for pending restart of {{ incus_guest.name }}
       incus_exec:
+        name: "{{ incus_guest.name }}"
         command: [test, -f, /var/run/reboot-required]
       register: incus_guest_reboot_required
       changed_when: false
