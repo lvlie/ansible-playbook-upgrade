@@ -36,6 +36,8 @@
     upgrade_restart_guests: false
     # How deep below /root to look for docker compose files inside guests.
     upgrade_compose_search_depth: 3
+    # Unix socket of the local Incus API.
+    incus_socket: /var/lib/incus/unix.socket
 
   tasks:
     - name: Upgrade host packages (including incus and netdata)
@@ -73,21 +75,25 @@
         enabled: true
       when: "'netdata' in ansible_facts.packages or (netdata_updater.stat.exists | default(false))"
 
-    - name: Wait for the incus daemon after the upgrade
-      ansible.builtin.command:
-        argv: [incus, admin, waitready, --timeout=300]
-      changed_when: false
+    - name: Wait for the incus API after the upgrade
+      ansible.builtin.uri:
+        unix_socket: "{{ incus_socket }}"
+        url: http://localhost/1.0
+      register: incus_api
+      until: incus_api.status == 200
+      retries: 30
+      delay: 10
 
     - name: List incus instances
-      ansible.builtin.command:
-        argv: [incus, list, --all-projects, --format, json]
+      ansible.builtin.uri:
+        unix_socket: "{{ incus_socket }}"
+        url: http://localhost/1.0/instances?recursion=1&all-projects=true
       register: incus_instances
-      changed_when: false
 
     - name: Upgrade running incus containers
       ansible.builtin.include_tasks: tasks/incus_guest.yml
       loop: >-
-        {{ incus_instances.stdout | from_json
+        {{ incus_instances.json.metadata
            | selectattr('type', 'equalto', 'container')
            | selectattr('status', 'equalto', 'Running')
            | list }}

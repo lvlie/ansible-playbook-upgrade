@@ -1,33 +1,33 @@
 ---
 # Upgrade a single running Incus container (passed in as `incus_guest`).
-# Everything runs through `incus exec` on the Incus host, so the guests need
-# no SSH access or Python of their own.
-
-- name: Build incus exec command for {{ incus_guest.name }}
-  ansible.builtin.set_fact:
-    incus_exec:
-      - incus
-      - exec
-      - --project
-      - "{{ incus_guest.project | default('default') }}"
-      - --env
-      - DEBIAN_FRONTEND=noninteractive
-      - "{{ incus_guest.name }}"
-      - --
+# Commands run through the Incus REST API on the host (library/incus_exec.py),
+# so the guests need no SSH access, no Python and no inventory entry.
 
 - name: Detect operating system of {{ incus_guest.name }}
-  ansible.builtin.command:
-    argv: "{{ incus_exec + ['sh', '-c', '. /etc/os-release && echo \"$ID\"'] }}"
+  incus_exec:
+    name: "{{ incus_guest.name }}"
+    project: "{{ incus_guest.project | default('default') }}"
+    socket: "{{ incus_socket }}"
+    command: [sh, -c, '. /etc/os-release && echo "$ID"']
   register: incus_guest_os
   changed_when: false
   failed_when: false
 
 - name: Upgrade Ubuntu guest {{ incus_guest.name }}
-  when: incus_guest_os.stdout | trim == 'ubuntu'
+  when: (incus_guest_os.stdout | default('') | trim) == 'ubuntu'
+  module_defaults:
+    incus_exec:
+      name: "{{ incus_guest.name }}"
+      project: "{{ incus_guest.project | default('default') }}"
+      socket: "{{ incus_socket }}"
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        HOME: /root
   block:
     - name: Upgrade apt packages in {{ incus_guest.name }}
-      ansible.builtin.command:
-        argv: "{{ incus_exec + ['sh', '-c', apt_script] }}"
+      incus_exec:
+        command: [sh, -c, "{{ apt_script }}"]
       vars:
         apt_script: >-
           apt-get update -q &&
@@ -39,8 +39,8 @@
       changed_when: "' 0 upgraded, 0 newly installed, 0 to remove' not in incus_guest_apt.stdout"
 
     - name: Find docker compose files in /root of {{ incus_guest.name }}
-      ansible.builtin.command:
-        argv: "{{ incus_exec + ['sh', '-c', find_script] }}"
+      incus_exec:
+        command: [sh, -c, "{{ find_script }}"]
       vars:
         find_script: >-
           command -v docker >/dev/null 2>&1 || exit 0;
@@ -52,8 +52,8 @@
       changed_when: false
 
     - name: Pull and recreate compose projects in {{ incus_guest.name }}
-      ansible.builtin.command:
-        argv: "{{ incus_exec + ['sh', '-c', compose_script, 'sh', compose_file] }}"
+      incus_exec:
+        command: [sh, -c, "{{ compose_script }}", sh, "{{ compose_file }}"]
       vars:
         compose_script: >-
           cd "$(dirname "$1")" &&
@@ -68,34 +68,48 @@
         'Created' in incus_guest_compose_up.stderr
 
     - name: Remove dangling docker images in {{ incus_guest.name }}
-      ansible.builtin.command:
-        argv: "{{ incus_exec + ['docker', 'image', 'prune', '--force'] }}"
+      incus_exec:
+        command: [docker, image, prune, --force]
       register: incus_guest_docker_prune
       changed_when: "'Total reclaimed space: 0B' not in incus_guest_docker_prune.stdout"
       when: incus_guest_compose_files.stdout_lines | length > 0
 
     - name: Clean up apt in {{ incus_guest.name }}
-      ansible.builtin.command:
-        argv: "{{ incus_exec + ['sh', '-c', 'apt-get -y -q autoremove --purge && apt-get -q clean'] }}"
+      incus_exec:
+        command: [sh, -c, apt-get -y -q autoremove --purge && apt-get -q clean]
       register: incus_guest_apt_clean
       changed_when: "' 0 to remove' not in incus_guest_apt_clean.stdout"
 
     - name: Check for pending restart of {{ incus_guest.name }}
-      ansible.builtin.command:
-        argv: "{{ incus_exec + ['test', '-f', '/var/run/reboot-required'] }}"
+      incus_exec:
+        command: [test, -f, /var/run/reboot-required]
       register: incus_guest_reboot_required
       changed_when: false
       failed_when: false
 
     - name: Restart {{ incus_guest.name }}
-      ansible.builtin.command:
-        argv:
-          - incus
-          - restart
-          - --project
-          - "{{ incus_guest.project | default('default') }}"
-          - "{{ incus_guest.name }}"
+      ansible.builtin.uri:
+        unix_socket: "{{ incus_socket }}"
+        url: "http://localhost/1.0/instances/{{ incus_guest.name | urlencode }}/state?project={{ incus_guest.project | default('default') | urlencode }}"
+        method: PUT
+        body_format: json
+        body:
+          action: restart
+          timeout: 120
+        status_code: [200, 202]
+      register: incus_guest_restart
       changed_when: true
+      when:
+        - upgrade_restart_guests | bool
+        - incus_guest_reboot_required.rc == 0
+
+    - name: Wait for restart of {{ incus_guest.name }}
+      ansible.builtin.uri:
+        unix_socket: "{{ incus_socket }}"
+        url: "http://localhost{{ incus_guest_restart.json.operation }}/wait?timeout=300"
+        timeout: 330
+      register: incus_guest_restart_wait
+      failed_when: incus_guest_restart_wait.json.metadata.status_code != 200
       when:
         - upgrade_restart_guests | bool
         - incus_guest_reboot_required.rc == 0
