@@ -1,0 +1,125 @@
+---
+# Runs the real play against a real Incus on the GitHub runner: the runner is
+# the Incus host, and the guests are real containers (Ubuntu with docker,
+# Ubuntu in another project, Alpine and a stopped one).
+name: End-to-end (Incus)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, to catch changes in Incus, images and packages.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANSIBLE_FORCE_COLOR: "0"
+  ANSIBLE_NOCOLOR: "1"
+
+jobs:
+  e2e:
+    name: Incus from ${{ matrix.incus }} on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Incus 6.0 LTS from the Ubuntu archive.
+          - {runner: ubuntu-24.04, incus: distro}
+          # Latest stable Incus from the Zabbly repository.
+          - {runner: ubuntu-24.04, incus: zabbly}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install ansible-core, roles and collections
+        run: |
+          pip install "$(grep '^ansible-core==' requirements-dev.txt)"
+          ansible-galaxy role install -r roles/requirements.yml -p roles
+          ansible-galaxy collection install -r collections/requirements.yaml -p collections
+
+      - name: Add the Zabbly Incus repository
+        if: matrix.incus == 'zabbly'
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc
+          sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.sources >/dev/null <<EOF
+          Enabled: yes
+          Types: deb
+          URIs: https://pkgs.zabbly.com/incus/stable
+          Suites: $(. /etc/os-release && echo "${VERSION_CODENAME}")
+          Components: main
+          Architectures: $(dpkg --print-architecture)
+          Signed-By: /etc/apt/keyrings/zabbly.asc
+          EOF
+
+      - name: Install Incus and netdata
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q incus netdata
+          sudo incus admin init --minimal
+          sudo incus version
+
+      - name: Let Incus guests through the runner's Docker firewall
+        run: |
+          # Docker on the runner sets the FORWARD policy to DROP, which cuts
+          # the Incus bridge off from the internet.
+          sudo iptables -P FORWARD ACCEPT
+          sudo ip6tables -P FORWARD ACCEPT
+
+      - name: Create guests
+        run: sudo tests/e2e/setup.sh
+
+      - name: Run the play
+        run: |
+          set -o pipefail
+          ansible-playbook -i tests/e2e/inventory.ini play.yml --limit incus \
+            -e incus_upgrade_restart_guests=true | tee run1.log
+
+      - name: Verify the result
+        run: sudo tests/e2e/verify.sh run1.log
+
+      - name: Run the play again (must not change anything)
+        run: |
+          set -o pipefail
+          # The host apt upgrade is skipped here: the runner's apt sources
+          # can publish new packages between the two runs.
+          ansible-playbook -i tests/e2e/inventory.ini play.yml --limit incus \
+            --skip-tags host_upgrade -e incus_upgrade_restart_guests=true | tee run2.log
+          if ! grep -Eq 'localhost +: ok=[0-9]+ +changed=0 ' run2.log; then
+            echo "::error::Second run reported changes:"
+            grep -B2 '^changed:' run2.log || true
+            exit 1
+          fi
+
+      - name: Show Incus state
+        if: always()
+        run: |
+          sudo incus list --all-projects || true
+          sudo journalctl -u incus --no-pager -n 200 || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-logs-${{ matrix.incus }}-${{ matrix.runner }}
+          path: run*.log
+          if-no-files-found: ignore

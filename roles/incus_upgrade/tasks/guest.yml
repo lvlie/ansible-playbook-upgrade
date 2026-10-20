@@ -1,0 +1,131 @@
+---
+# Upgrade a single running Incus container (passed in as `incus_upgrade_guest`).
+# Commands run through the Incus REST API on the host (library/incus_exec.py),
+# so the guests need no SSH access, no Python and no inventory entry.
+
+- name: Detect operating system of {{ incus_upgrade_guest.name }}
+  incus_exec:
+    name: "{{ incus_upgrade_guest.name }}"
+    project: "{{ incus_upgrade_guest.project | default('default') }}"
+    socket: "{{ incus_upgrade_socket }}"
+    timeout: "{{ incus_upgrade_exec_timeout }}"
+    command: [sh, -c, '. /etc/os-release && echo "$ID"']
+  register: incus_upgrade_guest_os
+  changed_when: false
+  failed_when: false
+
+- name: Upgrade Ubuntu guest {{ incus_upgrade_guest.name }}
+  when: (incus_upgrade_guest_os.stdout | default('') | trim) == 'ubuntu'
+  module_defaults:
+    incus_exec:
+      project: "{{ incus_upgrade_guest.project | default('default') }}"
+      socket: "{{ incus_upgrade_socket }}"
+      timeout: "{{ incus_upgrade_exec_timeout }}"
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        HOME: /root
+  block:
+    - name: Upgrade apt packages in {{ incus_upgrade_guest.name }}
+      incus_exec:
+        name: "{{ incus_upgrade_guest.name }}"
+        command: [sh, -c, "{{ apt_script }}"]
+      vars:
+        apt_script: >-
+          apt-get update -q &&
+          apt-get -y -q
+          -o Dpkg::Options::=--force-confdef
+          -o Dpkg::Options::=--force-confold
+          dist-upgrade
+      register: incus_upgrade_guest_apt
+      changed_when: incus_upgrade_guest_apt.stdout is not search('(?m)^0 upgraded, 0 newly installed, 0 to remove')
+
+    - name: Find docker compose files in /root of {{ incus_upgrade_guest.name }}
+      incus_exec:
+        name: "{{ incus_upgrade_guest.name }}"
+        command: [sh, -c, "{{ find_script }}"]
+      vars:
+        find_script: >-
+          command -v docker >/dev/null 2>&1 || exit 0;
+          find /root -maxdepth {{ incus_upgrade_compose_search_depth }} -type f
+          \( -name compose.yaml -o -name compose.yml
+          -o -name docker-compose.yaml -o -name docker-compose.yml \)
+          -not -path '*/.*'
+      register: incus_upgrade_guest_compose_files
+      changed_when: false
+
+    - name: Pull and recreate compose projects in {{ incus_upgrade_guest.name }}
+      incus_exec:
+        name: "{{ incus_upgrade_guest.name }}"
+        command: [sh, -c, "{{ compose_script }}", sh, "{{ incus_upgrade_compose_file }}"]
+      vars:
+        compose_script: >-
+          cd "$(dirname "$1")" &&
+          docker compose -f "$1" pull --quiet &&
+          docker compose -f "$1" up -d --remove-orphans
+      loop: "{{ incus_upgrade_guest_compose_files.stdout_lines }}"
+      loop_control:
+        loop_var: incus_upgrade_compose_file
+      register: incus_upgrade_guest_compose_up
+      changed_when: >-
+        'Recreate' in incus_upgrade_guest_compose_up.stderr or
+        'Created' in incus_upgrade_guest_compose_up.stderr
+
+    - name: Remove dangling docker images in {{ incus_upgrade_guest.name }}
+      incus_exec:
+        name: "{{ incus_upgrade_guest.name }}"
+        command: [docker, image, prune, --force]
+      register: incus_upgrade_guest_docker_prune
+      changed_when: "'Total reclaimed space: 0B' not in incus_upgrade_guest_docker_prune.stdout"
+      when: incus_upgrade_guest_compose_files.stdout_lines | length > 0
+
+    - name: Clean up apt in {{ incus_upgrade_guest.name }}
+      incus_exec:
+        name: "{{ incus_upgrade_guest.name }}"
+        command: [sh, -c, apt-get -y -q autoremove --purge && apt-get -q clean]
+      register: incus_upgrade_guest_apt_clean
+      changed_when: incus_upgrade_guest_apt_clean.stdout is not search('(?m)^\d+ upgraded, \d+ newly installed, 0 to remove')
+
+    - name: Check for pending restart of {{ incus_upgrade_guest.name }}
+      incus_exec:
+        name: "{{ incus_upgrade_guest.name }}"
+        command: [test, -f, /var/run/reboot-required]
+      register: incus_upgrade_guest_reboot_required
+      changed_when: false
+      failed_when: false
+
+    - name: Restart {{ incus_upgrade_guest.name }}
+      ansible.builtin.uri:
+        unix_socket: "{{ incus_upgrade_socket }}"
+        url: >-
+          {{ 'http://localhost/1.0/instances/' ~ (incus_upgrade_guest.name | urlencode)
+             ~ '/state?project=' ~ (incus_upgrade_guest.project | default('default') | urlencode) }}
+        method: PUT
+        body_format: json
+        body:
+          action: restart
+          timeout: 120
+        status_code: [200, 202]
+      register: incus_upgrade_guest_restart
+      changed_when: true
+      when:
+        - incus_upgrade_restart_guests | bool
+        - incus_upgrade_guest_reboot_required.rc == 0
+
+    - name: Wait for restart of {{ incus_upgrade_guest.name }}
+      ansible.builtin.uri:
+        unix_socket: "{{ incus_upgrade_socket }}"
+        url: "http://localhost{{ incus_upgrade_guest_restart.json.operation }}/wait?timeout=300"
+        timeout: 330
+      register: incus_upgrade_guest_restart_wait
+      failed_when: incus_upgrade_guest_restart_wait.json.metadata.status_code != 200
+      when:
+        - incus_upgrade_restart_guests | bool
+        - incus_upgrade_guest_reboot_required.rc == 0
+
+    - name: Report pending restart of {{ incus_upgrade_guest.name }}
+      ansible.builtin.debug:
+        msg: "{{ incus_upgrade_guest.name }} requires a restart (set incus_upgrade_restart_guests=true to do this automatically)"
+      when:
+        - not incus_upgrade_restart_guests | bool
+        - incus_upgrade_guest_reboot_required.rc == 0

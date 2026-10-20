@@ -1,0 +1,29 @@
+---
+- name: Gather installed packages
+  ansible.builtin.package_facts:
+
+# Netdata installed through the kickstart static build is not managed by
+# apt, so it has to be updated with its own updater.
+- name: Find netdata updater for non-apt installs
+  ansible.builtin.stat:
+    path: /opt/netdata/usr/libexec/netdata/netdata-updater.sh
+  register: incus_upgrade_netdata_updater
+  when: "'netdata' not in ansible_facts.packages"
+
+- name: Update netdata with its own updater
+  ansible.builtin.command:
+    argv:
+      - /opt/netdata/usr/libexec/netdata/netdata-updater.sh
+      - --non-interactive
+  register: incus_upgrade_netdata_update
+  changed_when: "'up to date' not in (incus_upgrade_netdata_update.stdout + incus_upgrade_netdata_update.stderr)"
+  when:
+    - "'netdata' not in ansible_facts.packages"
+    - incus_upgrade_netdata_updater.stat.exists
+
+- name: Ensure netdata is running
+  ansible.builtin.service:
+    name: netdata
+    state: started
+    enabled: true
+  when: "'netdata' in ansible_facts.packages or (incus_upgrade_netdata_updater.stat.exists | default(false))"

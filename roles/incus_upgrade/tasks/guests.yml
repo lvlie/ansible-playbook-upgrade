@@ -1,0 +1,29 @@
+---
+- name: Wait for the incus API after the upgrade
+  ansible.builtin.uri:
+    unix_socket: "{{ incus_upgrade_socket }}"
+    url: http://localhost/1.0
+  register: incus_upgrade_api
+  until: incus_upgrade_api.status == 200
+  retries: "{{ (incus_upgrade_api_wait_timeout | int / 10) | round(0, 'ceil') | int }}"
+  delay: 10
+
+- name: List incus instances
+  ansible.builtin.uri:
+    unix_socket: "{{ incus_upgrade_socket }}"
+    url: http://localhost/1.0/instances?recursion=1&all-projects=true
+  register: incus_upgrade_instances
+
+- name: Upgrade running incus containers
+  ansible.builtin.include_tasks:
+    file: guest.yml
+    apply:
+      tags: [guests]
+  loop: >-
+    {{ incus_upgrade_instances.json.metadata
+       | selectattr('type', 'equalto', 'container')
+       | selectattr('status', 'equalto', 'Running')
+       | list }}
+  loop_control:
+    loop_var: incus_upgrade_guest
+    label: "{{ incus_upgrade_guest.project | default('default') }}/{{ incus_upgrade_guest.name }}"

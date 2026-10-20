@@ -1,0 +1,27 @@
+---
+# Compatible with ansible-lint's yaml rules.
+extends: default
+
+ignore: |
+  .ansible/
+  .venv/
+  collections/ansible_collections/
+  roles/*
+  !roles/incus_upgrade/
+  !roles/requirements.yml
+
+rules:
+  braces:
+    max-spaces-inside: 1
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: false
+  line-length:
+    max: 160
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+  truthy:
+    allowed-values: ["true", "false"]
+    # GitHub Actions uses `on:` as a key.
+    check-keys: false

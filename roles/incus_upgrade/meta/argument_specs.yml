@@ -1,0 +1,33 @@
+---
+argument_specs:
+  main:
+    short_description: Upgrade an Incus host and all of its running Ubuntu containers
+    description:
+      - Upgrades the host with apt (including incus and netdata), then upgrades
+        every running Ubuntu container found through the Incus REST API,
+        including docker compose projects under /root, and cleans up afterwards.
+    options:
+      incus_upgrade_reboot_host:
+        type: bool
+        default: false
+        description: Reboot the host when /var/run/reboot-required exists.
+      incus_upgrade_restart_guests:
+        type: bool
+        default: false
+        description: Restart guests that need a reboot after upgrading.
+      incus_upgrade_compose_search_depth:
+        type: int
+        default: 3
+        description: How deep below /root to look for docker compose files.
+      incus_upgrade_socket:
+        type: path
+        default: /var/lib/incus/unix.socket
+        description: Unix socket of the local Incus API.
+      incus_upgrade_exec_timeout:
+        type: int
+        default: 3600
+        description: Seconds to wait for a single command inside a guest.
+      incus_upgrade_api_wait_timeout:
+        type: int
+        default: 300
+        description: Seconds to wait for the Incus API after the host upgrade.

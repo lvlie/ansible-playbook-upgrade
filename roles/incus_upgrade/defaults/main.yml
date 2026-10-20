@@ -1,0 +1,18 @@
+---
+# Reboot the Incus host itself when /var/run/reboot-required exists.
+incus_upgrade_reboot_host: false
+
+# Restart guests that report /var/run/reboot-required after upgrading.
+incus_upgrade_restart_guests: false
+
+# How deep below /root to look for docker compose files inside guests.
+incus_upgrade_compose_search_depth: 3
+
+# Unix socket of the local Incus API.
+incus_upgrade_socket: /var/lib/incus/unix.socket
+
+# Seconds to wait for a single command inside a guest to finish.
+incus_upgrade_exec_timeout: 3600
+
+# Seconds to wait for the Incus API to come back after the host upgrade.
+incus_upgrade_api_wait_timeout: 300

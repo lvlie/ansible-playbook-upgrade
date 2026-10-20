@@ -1,3 +1,4 @@
+---
 - name: Upgrade ubuntu
   hosts: ubuntu
   gather_facts: true
@@ -10,7 +11,8 @@
 
 - name: Upgrade RPi
   hosts: pi
-  gather_facts: min
+  gather_facts: true
+  gather_subset: [min]
   become: true
 
   roles:
@@ -23,3 +25,11 @@
 
   roles:
     - docker_compose
+
+- name: Upgrade Incus hosts and their Ubuntu containers
+  hosts: incus
+  gather_facts: true
+  become: true
+
+  roles:
+    - incus_upgrade
